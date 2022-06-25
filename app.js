@@ -1,8 +1,20 @@
-import puppeteer from "puppeteer";
+// import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-extra";
+import fs from "fs";
 import path from "path";
 import * as dotenv from "dotenv";
 import { url } from "inspector";
 dotenv.config();
+
+// Add stealth plugin and use defaults (all tricks to hide puppeteer usage)
+// const StealthPlugin = require('puppeteer-extra-plugin-stealth')
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+puppeteer.use(StealthPlugin());
+
+// Add adblocker plugin to block all ads and trackers (saves bandwidth)
+// const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
+import AdblockerPlugin from "puppeteer-extra-plugin-adblocker";
+puppeteer.use(AdblockerPlugin({ blockTrackers: true }));
 
 // Establish general params of app, and then invoke processes ...
 async function app() {
@@ -14,12 +26,26 @@ async function app() {
         //      For one page, put that page # twice; otherwise, put the first and last pages:
         //      Ex: for page #1 only, put (1, 1)
         //      Ex: for pages 3 - 5, put (3, 5)
-        const pagesArray = workScope(1, 3); // 👀 CHANGE THIS IF YOU WANT TO SET 'START' AND 'END' INDEX PAGES 👀
+        // const pagesArray = workScope(20, 20); // 👀 CHANGE THIS IF YOU WANT TO SET 'START' AND 'END' INDEX PAGES 👀
+        const pagesArray = workScope(1, 1); // 👀 CHANGE THIS IF YOU WANT TO SET 'START' AND 'END' INDEX PAGES 👀
+        // const pagesArray = workScope(80, 90); // 👀 CHANGE THIS IF YOU WANT TO SET 'START' AND 'END' INDEX PAGES 👀
+        // const pagesArray = workScope(80, 80); // 👀 CHANGE THIS IF YOU WANT TO SET 'START' AND 'END' INDEX PAGES 👀
 
         // ** APP STARTUP **
 
         // Open a browser visible to a user (rather than headless):
-        const browser = await puppeteer.launch({ headless: false });
+        const browser = await puppeteer.launch({
+            headless: false,
+            ignoreHTTPSErrors: true,
+        });
+
+        // Block 'notifications' redirects
+        const context = browser.defaultBrowserContext();
+        // context.overridePermissions("https://3dcu.com/", ["notifications"]);
+        // context.overridePermissions("https://3dcu.com/", [
+        //     "--disable-notifications",
+        // ]);
+        context.overridePermissions("https://3dcu.com/", []);
         // Return the page(s) that are open in an array
         const pages = await browser.pages();
         // Store the open page
@@ -226,9 +252,18 @@ async function downloadFiles(browser, pageSize, linksList) {
 
         // For every 'Show' link in sharing site's 'linksList' ...
         for (
-            let currentShowPage = 1; // 👀 CHANGE THIS IF YOU WANT TO START AT ANOTHER SHOW PAGE 👀
+            // ** ALL items on the page ...
+            // let currentShowPage = 0; // 👀 CHANGE THIS IF YOU WANT TO START AT ANOTHER SHOW PAGE 👀
             // currentShowPage < linksList.length; // USE THIS IF YOU WANT TO DO EVERYTHING ON THE PAGE
-            currentShowPage <= 12; // 👀 USE THIS IF YOU NEED TO STOP BEFORE THE END OF THE PAGE 👀
+            // ** ONE item ...
+            // let currentShowPage = 1; // 👀 CHANGE THIS IF YOU WANT TO START AT ANOTHER SHOW PAGE 👀
+            // currentShowPage <= 1; // 👀 USE THIS IF YOU NEED TO STOP BEFORE THE END OF THE PAGE 👀
+            // ** A RANGE of items ...
+            // let currentShowPage = 1; // 👀 CHANGE THIS IF YOU WANT TO START AT ANOTHER SHOW PAGE 👀
+            // currentShowPage <= 15; // USE THIS IF YOU WANT TO DO EVERYTHING ON THE PAGE
+            // ** A RANGE of items ...
+            let currentShowPage = 3; // 👀 CHANGE THIS IF YOU WANT TO START AT ANOTHER SHOW PAGE 👀
+            currentShowPage <= 3; // USE THIS IF YOU WANT TO DO EVERYTHING ON THE PAGE
             currentShowPage++
         ) {
             const url = linksList[currentShowPage]; // console.log("url:", url);
@@ -239,19 +274,10 @@ async function downloadFiles(browser, pageSize, linksList) {
                 timeout: 0,
             });
 
+            await pwCheckNLog(downloadPage);
+
             // ** GRAB CLOUD LINK(S) **
             let tLinks = await getTLinks(downloadPage); // console.log(`The result tLinks from tLinkArray:`, tLinks);
-
-            // CRASH soln: Check whether we have too many or too few cloud links ...
-            if (tLinks.length > 1) {
-                // If too many, set a delay of 1 min to let them finish ...
-                await downloadPage.waitForTimeout(60000);
-            } else if (tLinks.length < 1) {
-                // If too few, log the failed 'show' page for future review ...
-                console.error(`🚨💀 No cloud links were found - \n
-                Check ${url} `);
-                failedPages.push(url);
-            }
 
             console.log(
                 `${currentShowPage}) Downloading sharing site's item "${url}" -
@@ -262,6 +288,17 @@ async function downloadFiles(browser, pageSize, linksList) {
 
             // ** GO TO CLOUD LINK(S) **
             await goDownload(downloadPage, tLinks, url);
+
+            // CRASH soln: Check whether we have too many or too few cloud links ...
+            if (tLinks.length > 1) {
+                // If too many, set a delay of 1 min to let them finish ...
+                await downloadPage.waitForTimeout(45000); // NEEDS to happen *after* download of these links, so there's time for theme to resolve
+            } else if (tLinks.length < 1) {
+                // If too few, log the failed 'show' page for future review ...
+                console.error(`🚨💀 No cloud links were found - \n
+                Check ${url} `);
+                failedPages.push(url);
+            }
 
             // CRASH soln: Set a delay on every 5 'show' pages ...
             if (
@@ -284,11 +321,66 @@ async function downloadFiles(browser, pageSize, linksList) {
     }
 }
 
+// Check if a password is provided on the 'show' page, and log it (if it exists) to passwords.txt ...
+async function pwCheckNLog(downloadPage) {
+    let pwExists = await downloadPage.evaluate(() => {
+        if (
+            document.body.textContent.includes("Password") ||
+            document.body.textContent.includes("PASSWORD") ||
+            document.body.textContent.includes("password")
+        ) {
+            return true;
+        } else {
+            return false;
+        }
+    }); // console.log("pwExists results:", pwExists);
+
+    if (pwExists) {
+        let password = await downloadPage.evaluate(() => {
+            let siteText = document.body.querySelector(
+                `[style*="text-align:left"]`
+            );
+            const m = new Date();
+            const dateTime =
+                m.getUTCFullYear() +
+                "/" +
+                (m.getUTCMonth() + 1) +
+                "/" +
+                m.getUTCDate() +
+                " " +
+                m.getUTCHours() +
+                ":" +
+                m.getUTCMinutes() +
+                ":" +
+                m.getUTCSeconds();
+            siteText = `\n` + `\n` + dateTime + `\n` + siteText.innerText;
+            // return siteText ? siteText : "";
+            return siteText;
+        }); // console.log("password:", typeof password, password);
+
+        fs.appendFile(
+            "./logs_&_errors/passwords.txt",
+            password,
+            function (err) {
+                if (err) {
+                    console.log(`🚨 Password file write failed ...`);
+                } else {
+                    console.log(`🔐 Password file written!`);
+                }
+            }
+        );
+    }
+}
+
 // Check what (if any) cloud hosting domain is being used, and return all matching links ...
 async function getTLinks(downloadPage) {
     try {
         let tLinkArray = await downloadPage.evaluate(() => {
-            const tLinkRoots = ["https://turb.pw", "https://turbobit.net"]; // Possible URLs:
+            const tLinkRoots = [
+                "https://turb.pw",
+                "https://turbobit.net",
+                "https://turb.cc",
+            ]; // Possible URLs:
             let anchors = []; // Nodelist
             let matches = []; // Array of links
 
@@ -322,7 +414,7 @@ async function getTLinks(downloadPage) {
 }
 
 // Go to cloud hosting site & download the file ...
-async function goDownload(downloadPage, tLinks) {
+async function goDownload(downloadPage, tLinks, url) {
     try {
         for (
             let currentTLink = 0;
@@ -335,18 +427,39 @@ async function goDownload(downloadPage, tLinks) {
             });
 
             // Set Download Location ...
-            await downloadPage.client.send("Page.setDownloadBehavior", {
+            const downloadTo = process.env.DOWNLOAD_LOCATION;
+
+            console.log(
+                "🎉🎉🎉🎉🎉 downloadTo: ",
+                typeof downloadTo,
+                downloadTo
+            );
+
+            await downloadPage._client.send("Browser.setDownloadBehavior", {
                 behavior: "allow",
-                downloadPath: "L:/",
+                // downloadPath: "L:\\", // "To be installed" folder
+                downloadPath: downloadTo, // "To be installed" folder
+                // downloadPath: "L:/",
             });
 
             // Grab download link ...
             let download = await downloadPage.evaluate(() => {
-                const dLink = document
-                    .querySelector(
-                        "#premium-file-links > div.premium-link-block"
-                    )
-                    .querySelector("a").href;
+                // OPT #1
+                // const dLink = document
+                //     .querySelector(
+                //         "#premium-file-links > div.premium-link-block"
+                //     )
+                //     .querySelector("a").href;
+                // return dLink;
+                // OPT #2
+                // const dLink = document
+                //     .querySelector("#premium-file-links > div:nth-child(1)")
+                //     .querySelector("a").href;
+                // return dLink;
+                // OPT #3
+                const dLink = document.querySelectorAll(
+                    ".shorturl-link > input"
+                )[0].value;
                 return dLink;
             }); // console.log("download link:", download);
 
@@ -373,15 +486,3 @@ app();
 // ** Notes:
 // const url = process.env.TARGET_LOGIN_LINK;
 // 🤖 👋 👍✔️➰🏎️🌬️ 🚨 ✨📃 🔓 🤮 💀
-// // Set Download Location
-// await downloadPage.client.send("Page.setDownloadBehavior", {
-//     behavior: "allow",
-//     downloadPath: "L:/"
-//   })
-// L:\
-// file:///L:/
-//     downloadPath: path.resolve('', 'tmp')
-// downloadPath: './myAwesomeDownloadFolder'
-// await firstTab.goto("L:/", {
-//     waitUntil: "networkidle0",
-// });
